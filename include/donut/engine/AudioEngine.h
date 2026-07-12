@@ -68,6 +68,12 @@ struct EffectDesc
 
     uint32_t loop = false; // play once or repeat (up to Engine::infinite_loop)
 
+    // Position, in seconds from the start of the sample, playback should
+    // begin at - lets a caller "seek" by stopping the current Effect and
+    // submitting a fresh one with this set, since XAudio2 has no way to
+    // seek a buffer already playing (see Xaudio2Implementation::playSample).
+    float startOffsetSeconds = 0.f;
+
     // if set, creates a 3D omnidirectional sound emitter at the position set by
     // the affine3 translation (see Effect::setEmitterTransform)
     donut::math::affine3 const * transform = nullptr;
@@ -126,8 +132,9 @@ public:
     // plays an audio sample on the effects mixing track
     std::weak_ptr<Effect> playEffect(EffectDesc const & desc);
 
-    // plays a song on the music mixing track
-    std::weak_ptr<Effect> playMusic(std::shared_ptr<AudioData const> song, float crossfade = 2.f);
+    // plays a song on the music mixing track ; startOffsetSeconds seeks
+    // into the song before playback starts (see EffectDesc::startOffsetSeconds)
+    std::weak_ptr<Effect> playMusic(std::shared_ptr<AudioData const> song, float crossfade = 2.f, float startOffsetSeconds = 0.f);
 
     // returns true the engine is transitioning (cross-fading) between 2 songs, false otherwise
     bool crossfadeActive() const;

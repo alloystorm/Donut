@@ -98,7 +98,7 @@ public:
     Options const & getOptions() const { return m_options; }
 
     virtual std::weak_ptr<Effect> playEffect(EffectDesc const & desc) = 0;
-    virtual std::weak_ptr<Effect> playMusic(std::shared_ptr<AudioData const> sample, float crossfade) = 0;
+    virtual std::weak_ptr<Effect> playMusic(std::shared_ptr<AudioData const> sample, float crossfade, float startOffsetSeconds) = 0;
 
     virtual bool crossfadeActive() const = 0;
 
@@ -332,7 +332,7 @@ public:
 
     virtual std::weak_ptr<Effect> playEffect(EffectDesc const & desc);
 
-    virtual std::weak_ptr<Effect> playMusic(std::shared_ptr<AudioData const> sample, float crossfade);
+    virtual std::weak_ptr<Effect> playMusic(std::shared_ptr<AudioData const> sample, float crossfade, float startOffsetSeconds);
 
     virtual bool crossfadeActive() const;
 
@@ -567,6 +567,15 @@ std::weak_ptr<Effect> Xaudio2Implementation::playSample(IXAudio2SubmixVoice * su
         buffer.Flags = XAUDIO2_END_OF_STREAM;
         buffer.AudioBytes = desc.sample->samplesSize;
         buffer.LoopCount = desc.loop == 1 ? XAUDIO2_NO_LOOP_REGION : std::min(desc.loop, (uint32_t)XAUDIO2_LOOP_INFINITE);
+        if (desc.startOffsetSeconds > 0.f)
+        {
+            // PlayBegin is in sample frames (not bytes), matching sampleRate's
+            // units - clamp so a stale/out-of-range seek can't submit a
+            // starting position past the end of the buffer.
+            uint32_t totalFrames = desc.sample->samplesSize / desc.sample->blockAlignment;
+            uint32_t startFrame = uint32_t(desc.startOffsetSeconds * float(desc.sample->sampleRate));
+            buffer.PlayBegin = std::min(startFrame, totalFrames);
+        }
 
         if (voice->SubmitSourceBuffer(&buffer) != S_OK) {
             log::warning("AudioEngine : error SubmitSourceBuffer");
@@ -621,7 +630,7 @@ std::weak_ptr<Effect> Xaudio2Implementation::playEffect(EffectDesc const & desc)
     return playSample(m_effects, desc);
 }
 
-std::weak_ptr<Effect> Xaudio2Implementation::playMusic(std::shared_ptr<AudioData const> sample, float crossfade)
+std::weak_ptr<Effect> Xaudio2Implementation::playMusic(std::shared_ptr<AudioData const> sample, float crossfade, float startOffsetSeconds)
 {
     std::weak_ptr<Effect> result;
 
@@ -632,6 +641,7 @@ std::weak_ptr<Effect> Xaudio2Implementation::playMusic(std::shared_ptr<AudioData
     desc.sample = sample;
     desc.loop = Engine::infinite_loop;
     desc.transform = nullptr;
+    desc.startOffsetSeconds = startOffsetSeconds;
 
     if (auto cursong = m_currentSong.lock())
     {
@@ -964,11 +974,11 @@ std::weak_ptr<Effect> Engine::playEffect(EffectDesc const & desc)
     return effect;
 }
 
-std::weak_ptr<Effect> Engine::playMusic(std::shared_ptr<AudioData const> song, float crossfade)
+std::weak_ptr<Effect> Engine::playMusic(std::shared_ptr<AudioData const> song, float crossfade, float startOffsetSeconds)
 {
     std::weak_ptr<Effect> effect;
     if (m_implementation)
-        effect = m_implementation->playMusic(song, crossfade);
+        effect = m_implementation->playMusic(song, crossfade, startOffsetSeconds);
     return effect;
 }
 

@@ -109,6 +109,7 @@ public:
 private:
 
     static std::shared_ptr<AudioData const> importRiff(std::shared_ptr<donut::vfs::IBlob> blob, char const * filepath);
+    static std::shared_ptr<AudioData const> importOgg(std::shared_ptr<donut::vfs::IBlob> blob, char const * filepath);
 
     std::shared_ptr<AudioData const> loadAudioFile (const std::filesystem::path & path);
 

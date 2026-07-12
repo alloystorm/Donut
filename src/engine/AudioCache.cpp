@@ -62,6 +62,13 @@ struct DataChunk
     uint32_t  dataChunkSize;  // Sampled data length
 };
 
+// Declared here rather than pulling in stb_vorbis.h's full single-header
+// interface (which defines its own struct types) - only the one-shot
+// decode-to-malloc'd-PCM entry point is needed. Implemented by
+// src/engine/stb_vorbis_impl.c (compiled as C, hence extern "C" to match
+// its linkage).
+extern "C" int stb_vorbis_decode_memory(const unsigned char* mem, int len, int* channels, int* sample_rate, short** output);
+
 namespace donut::engine::audio
 {
 
@@ -146,6 +153,38 @@ std::shared_ptr<AudioData const> AudioCache::importRiff(std::shared_ptr<donut::v
     return result;
 }
 
+std::shared_ptr<AudioData const> AudioCache::importOgg(std::shared_ptr<donut::vfs::IBlob> blob, char const * filepath)
+{
+    int channels = 0, sampleRate = 0;
+    short* pcm = nullptr;
+    int frames = stb_vorbis_decode_memory((unsigned char const*)blob->data(), int(blob->size()), &channels, &sampleRate, &pcm);
+    if (frames <= 0 || !pcm)
+    {
+        log::warning("Failed to decode Ogg Vorbis file `%s`", filepath);
+        return nullptr;
+    }
+
+    std::shared_ptr<AudioData> result = std::make_shared<AudioData>();
+
+    result->format = AudioData::Format::WAVE_PCM_INTEGER;
+    result->nchannels = uint32_t(channels);
+    result->sampleRate = uint32_t(sampleRate);
+    result->bitsPerSample = 16;
+    result->blockAlignment = uint16_t(channels * (result->bitsPerSample / 8));
+    result->byteRate = result->sampleRate * result->blockAlignment;
+
+    size_t dataSize = size_t(frames) * size_t(channels) * sizeof(short);
+    result->samplesSize = uint32_t(dataSize);
+    result->samples = pcm;
+
+    // stb_vorbis_decode_memory malloc()s `pcm` - vfs::Blob's destructor
+    // calls free() on the pointer it's given, exactly matching (see
+    // VFS.cpp Blob::~Blob).
+    result->m_data = std::make_shared<donut::vfs::Blob>(pcm, dataSize);
+
+    return result;
+}
+
 static bool strcaseequals(const std::string& a, const std::string& b)
 {
 #ifdef _WIN32
@@ -169,6 +208,10 @@ std::shared_ptr<AudioData const> AudioCache::loadAudioFile (const std::filesyste
     if (strcaseequals(extension.generic_string(), ".wav"))
     {
         return importRiff(blob, path.generic_string().c_str());
+    }
+    else if (strcaseequals(extension.generic_string(), ".ogg"))
+    {
+        return importOgg(blob, path.generic_string().c_str());
     }
     else
         log::warning("Unsupported audio format `%s` for file `%s`", extension.c_str());
