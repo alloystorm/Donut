@@ -42,8 +42,17 @@ struct Effect
     virtual void setPan(float pan) = 0;
 
     virtual void pause() = 0; // pause playback & don't release voice to the pool
+    virtual void resume() = 0; // resume playback after pause() - sample-exact, no buffer resubmission
     virtual void stop() = 0; // permanently stops playback & release voice to the pool
-    virtual float played() = 0; // duration of sample portion played (in seconds) ; -1.f if not playing
+    // Duration of THIS effect's playback (in seconds, excluding any
+    // startOffsetSeconds skip); -1.f if not playing. Measured against a
+    // per-effect baseline of the voice's SamplesPlayed counter captured at
+    // start: XAudio2's counter is cumulative per voice and only resets at a
+    // natural stream end, and this engine POOLS AND REUSES voices - reading
+    // the raw counter (as this used to) made every effect played on a
+    // recycled voice report the previous effects' playback time on top of
+    // its own.
+    virtual float played() = 0;
 
     // update 3D transform of this emitter ; can be set asynchronously
     // (returns false if effect was not set as 3D)

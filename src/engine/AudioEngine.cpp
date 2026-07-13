@@ -227,6 +227,7 @@ struct Xaudio2Effect : public Effect
     void setPitch(float pitch) override;
     void setPan(float pan) override;
     void pause() override;
+    void resume() override;
     void stop() override;
     float played() override;
     void setEffectCallback(EffectCallback const & callback) override;
@@ -237,6 +238,10 @@ struct Xaudio2Effect : public Effect
     bool stopped = false;
     uint32_t key = 0;
     IXAudio2SourceVoice * voice = nullptr;
+    // Voice's cumulative SamplesPlayed at the moment this effect started -
+    // see Effect::played()'s doc comment (voices are pooled/reused, the
+    // counter is per-voice-lifetime, not per-buffer).
+    uint64_t samplesPlayedBase = 0;
     EffectCallback callback;
 };
 
@@ -247,6 +252,9 @@ std::weak_ptr<AudioData const> Xaudio2Effect::getSample() const { return sample;
 void Xaudio2Effect::setVolume(float volume) { if (voice) voice->SetVolume(volume); }
 void Xaudio2Effect::setPitch(float pitch) { if (voice) voice->SetFrequencyRatio(pitch); }
 void Xaudio2Effect::pause() { if (voice) voice->Stop(); }
+// IXAudio2SourceVoice::Stop only halts consumption; the buffer/cursor stay
+// intact, so Start picks up exactly where pause left off.
+void Xaudio2Effect::resume() { if (voice && !stopped) voice->Start(0); }
 void Xaudio2Effect::stop() { pause(); (const_cast<Xaudio2Effect *>(this))->stopped = true; }
 void Xaudio2Effect::setPan(float pan) { if (sample) applyPan(pan, voice, sample->nchannels); }
 bool Xaudio2Effect::setEmitterTransform(donut::math::affine3 const & transform) { return false; }
@@ -258,7 +266,12 @@ float Xaudio2Effect::played()
     {
         XAUDIO2_VOICE_STATE xstate;
         voice->GetState(&xstate);
-        return float(xstate.SamplesPlayed) / sample->sampleRate;
+        // Counter reset below the baseline means the stream ended (and the
+        // voice is about to be reclaimed) - report "not playing" rather
+        // than a bogus huge unsigned difference.
+        if (xstate.SamplesPlayed < samplesPlayedBase)
+            return -1.f;
+        return float(xstate.SamplesPlayed - samplesPlayedBase) / sample->sampleRate;
     }
     else
         return -1.f;
@@ -589,6 +602,16 @@ std::weak_ptr<Effect> Xaudio2Implementation::playSample(IXAudio2SubmixVoice * su
         if (desc.pan != 0.f)
             applyPan(desc.pan, voice, desc.sample->nchannels);
 
+        // Capture the recycled voice's cumulative SamplesPlayed while it's
+        // still stopped (before Start, so no samples race in between) -
+        // this effect's played() baseline. See Effect::played().
+        uint64_t samplesPlayedBase = 0;
+        {
+            XAUDIO2_VOICE_STATE xstate;
+            voice->GetState(&xstate);
+            samplesPlayedBase = xstate.SamplesPlayed;
+        }
+
         if (FAILED(hr = voice->Start(0)))
         {
             log::warning("Error starting voice for audio sample");
@@ -616,6 +639,7 @@ std::weak_ptr<Effect> Xaudio2Implementation::playSample(IXAudio2SubmixVoice * su
         effect->sample = desc.sample;
         effect->key = key;
         effect->voice = voice;
+        effect->samplesPlayedBase = samplesPlayedBase;
         effect->callback = desc.updateCB;
 
         m_activeVoices.emplace_back(effect);
