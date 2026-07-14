@@ -43,8 +43,8 @@ struct GeometryData
     uint curveRadiusOffset;
 
     uint materialIndex;
-    uint pad0;
-    uint pad1;
+    uint restPositionOffset;
+    int restVertexBufferIndex;
     uint pad2;
 };
 
@@ -105,8 +105,8 @@ GeometryData LoadGeometryData(ByteAddressBuffer buffer, uint offset)
     ret.tangentOffset = c.z;
     ret.curveRadiusOffset = c.w;
     ret.materialIndex = d.x;
-    ret.pad0 = d.y;
-    ret.pad1 = d.z;
+    ret.restPositionOffset = d.y;
+    ret.restVertexBufferIndex = int(d.z);
     ret.pad2 = d.w;
     return ret;
 }

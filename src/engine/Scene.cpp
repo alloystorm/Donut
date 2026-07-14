@@ -1194,6 +1194,12 @@ void Scene::UpdateGeometry(const std::shared_ptr<MeshInfo>& mesh)
         gdata.vertexBufferIndex = mesh->buffers->vertexBufferDescriptor ? mesh->buffers->vertexBufferDescriptor->Get() : -1;
         gdata.positionOffset = mesh->buffers->hasAttribute(VertexAttribute::Position)
             ? uint32_t(vertexOffset * sizeof(float3) + mesh->buffers->getVertexBufferRange(VertexAttribute::Position).byteOffset) : ~0u;
+        
+        auto restBuffers = mesh->skinPrototype ? mesh->skinPrototype->buffers : mesh->buffers;
+        gdata.restPositionOffset = restBuffers->hasAttribute(VertexAttribute::Position)
+            ? uint32_t(vertexOffset * sizeof(float3) + restBuffers->getVertexBufferRange(VertexAttribute::Position).byteOffset) : ~0u;
+        gdata.restVertexBufferIndex = restBuffers->vertexBufferDescriptor ? restBuffers->vertexBufferDescriptor->Get() : -1;
+
         gdata.prevPositionOffset = mesh->buffers->hasAttribute(VertexAttribute::PrevPosition)
             ? uint32_t(vertexOffset * sizeof(float3) + mesh->buffers->getVertexBufferRange(VertexAttribute::PrevPosition).byteOffset) : ~0u;
         gdata.texCoord1Offset = mesh->buffers->hasAttribute(VertexAttribute::TexCoord1)
