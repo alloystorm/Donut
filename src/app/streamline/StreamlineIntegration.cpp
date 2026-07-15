@@ -287,6 +287,8 @@ bool StreamlineIntegration::InitializePreDevice(nvrhi::GraphicsAPI api, int appI
     }
 
     pref.flags |= sl::PreferenceFlags::eUseManualHooking;
+    // Disable OTA updates to prevent nvngx_update.exe launch errors on startup
+    pref.flags &= ~sl::PreferenceFlags::eAllowOTA;
 
     auto pathDll = GetSlInterposerDllLocation();
 
