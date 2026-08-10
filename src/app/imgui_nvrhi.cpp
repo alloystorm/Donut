@@ -150,8 +150,21 @@ bool ImGui_NVRHI::init(nvrhi::IDevice* device, std::shared_ptr<ShaderFactory> sh
         blendState.targets[0].setBlendEnable(true)
             .setSrcBlend(nvrhi::BlendFactor::SrcAlpha)
             .setDestBlend(nvrhi::BlendFactor::InvSrcAlpha)
-            .setSrcBlendAlpha(nvrhi::BlendFactor::InvSrcAlpha)
-            .setDestBlendAlpha(nvrhi::BlendFactor::Zero);
+            // Accumulate COVERAGE in alpha: dstA = srcA + dstA*(1-srcA).
+            //
+            // Upstream used SrcBlendAlpha=InvSrcAlpha, DestBlendAlpha=Zero,
+            // which yields dstA = srcA*(1-srcA) - zero for both a fully opaque
+            // and a fully transparent pixel, and never above 0.25. Harmless
+            // when the target is the swapchain, where alpha is never read, but
+            // it makes the render target unusable as a source: the most solid
+            // parts of the UI carry the LOWEST alpha.
+            //
+            // dxr_native composites the UI from an offscreen target onto a
+            // world-space quad in VR, so it needs alpha to mean coverage. RGB
+            // blending is unchanged, so the result is PREMULTIPLIED - composite
+            // with `ui.rgb + dst*(1-ui.a)`, not a lerp.
+            .setSrcBlendAlpha(nvrhi::BlendFactor::One)
+            .setDestBlendAlpha(nvrhi::BlendFactor::InvSrcAlpha);
 
         auto rasterState = nvrhi::RasterState()
             .setFillSolid()
