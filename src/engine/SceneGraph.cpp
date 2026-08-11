@@ -597,6 +597,15 @@ void SceneGraph::UnregisterLeaf(const std::shared_ptr<SceneGraphLeaf>& leaf)
     auto meshInstance = std::dynamic_pointer_cast<MeshInstance>(leaf);
     if (meshInstance)
     {
+        // A SkinnedMeshInstance is also a MeshInstance. Remove it from the
+        // specialized registry before this generic branch returns.
+        if (auto skinnedInstance = std::dynamic_pointer_cast<SkinnedMeshInstance>(meshInstance))
+        {
+            auto skinnedIt = std::find(m_SkinnedMeshInstances.begin(), m_SkinnedMeshInstances.end(), skinnedInstance);
+            if (skinnedIt != m_SkinnedMeshInstances.end())
+                m_SkinnedMeshInstances.erase(skinnedIt);
+        }
+
         const auto& mesh = meshInstance->GetMesh();
         if (mesh)
         {
@@ -627,15 +636,6 @@ void SceneGraph::UnregisterLeaf(const std::shared_ptr<SceneGraphLeaf>& leaf)
         auto it = std::find(m_MeshInstances.begin(), m_MeshInstances.end(), meshInstance);
         if (it != m_MeshInstances.end())
             m_MeshInstances.erase(it);
-        return;
-    }
-
-    auto skinnedInstance = std::dynamic_pointer_cast<SkinnedMeshInstance>(leaf);
-    if (skinnedInstance)
-    {
-        auto it = std::find(m_SkinnedMeshInstances.begin(), m_SkinnedMeshInstances.end(), skinnedInstance);
-        if (it != m_SkinnedMeshInstances.end())
-            m_SkinnedMeshInstances.erase(it);
         return;
     }
 
