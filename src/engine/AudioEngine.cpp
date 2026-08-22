@@ -575,24 +575,51 @@ std::weak_ptr<Effect> Xaudio2Implementation::playSample(IXAudio2SubmixVoice * su
         if (!setOutputVoice(submix, voice))
             return result;
 
+        uint32_t const loopCount = desc.loop == 1 ? XAUDIO2_NO_LOOP_REGION : std::min(desc.loop, (uint32_t)XAUDIO2_LOOP_INFINITE);
+        uint32_t const totalFrames = desc.sample->samplesSize / desc.sample->blockAlignment;
+
+        // PlayBegin is in sample frames (not bytes), matching sampleRate's
+        // units - clamp so a stale/out-of-range seek can't submit a starting
+        // position past the end of the buffer.
+        uint32_t startFrame = 0;
+        if (desc.startOffsetSeconds > 0.f)
+            startFrame = std::min(uint32_t(desc.startOffsetSeconds * float(desc.sample->sampleRate)), totalFrames);
+
+        // Starting at an offset and looping are not expressible in one
+        // buffer: XAudio2's implicit loop region is the *play* region, so a
+        // single buffer with both set would loop back to the offset rather
+        // than to the top of the track - while callers compute their own
+        // wraparound against the sample's full duration, leaving a seeked
+        // song permanently out of sync with whatever it drives after its
+        // first loop. Queue two instead: the tail of the track from the
+        // offset (played once), followed by the whole track carrying the
+        // loop. SamplesPlayed spans both, so Effect::played() is unaffected.
+        bool const splitSeekAndLoop = startFrame > 0 && loopCount != XAUDIO2_NO_LOOP_REGION && totalFrames > 0;
+
         XAUDIO2_BUFFER buffer = { 0 };
         buffer.pAudioData = (BYTE const *)desc.sample->samples;
-        buffer.Flags = XAUDIO2_END_OF_STREAM;
+        buffer.Flags = splitSeekAndLoop ? 0 : XAUDIO2_END_OF_STREAM;
         buffer.AudioBytes = desc.sample->samplesSize;
-        buffer.LoopCount = desc.loop == 1 ? XAUDIO2_NO_LOOP_REGION : std::min(desc.loop, (uint32_t)XAUDIO2_LOOP_INFINITE);
-        if (desc.startOffsetSeconds > 0.f)
-        {
-            // PlayBegin is in sample frames (not bytes), matching sampleRate's
-            // units - clamp so a stale/out-of-range seek can't submit a
-            // starting position past the end of the buffer.
-            uint32_t totalFrames = desc.sample->samplesSize / desc.sample->blockAlignment;
-            uint32_t startFrame = uint32_t(desc.startOffsetSeconds * float(desc.sample->sampleRate));
-            buffer.PlayBegin = std::min(startFrame, totalFrames);
-        }
+        buffer.LoopCount = splitSeekAndLoop ? XAUDIO2_NO_LOOP_REGION : loopCount;
+        buffer.PlayBegin = startFrame;
 
         if (voice->SubmitSourceBuffer(&buffer) != S_OK) {
             log::warning("AudioEngine : error SubmitSourceBuffer");
             return result;
+        }
+
+        if (splitSeekAndLoop)
+        {
+            XAUDIO2_BUFFER loopBuffer = { 0 };
+            loopBuffer.pAudioData = (BYTE const *)desc.sample->samples;
+            loopBuffer.Flags = XAUDIO2_END_OF_STREAM;
+            loopBuffer.AudioBytes = desc.sample->samplesSize;
+            loopBuffer.LoopCount = loopCount;
+
+            if (voice->SubmitSourceBuffer(&loopBuffer) != S_OK) {
+                log::warning("AudioEngine : error SubmitSourceBuffer (loop)");
+                return result;
+            }
         }
 
         if (desc.volume!=1.f)
@@ -727,8 +754,18 @@ void Xaudio2Implementation::update()
                 XAUDIO2_VOICE_STATE xstate;
                 effect->voice->GetState(&xstate);
 
-                // check if the voice is still playing something
-                if (xstate.SamplesPlayed == 0 || effect->stopped == true)
+                // check if the voice is still playing something.
+                //
+                // BuffersQueued, not SamplesPlayed: the latter reads 0 both
+                // when a stream has ended AND on a voice that was started a
+                // fraction of a millisecond ago and has not been processed
+                // yet, so an effect whose Start landed just before this tick
+                // could be torn down before it ever produced a sample. That
+                // is silent for a one-shot, but a music track is a clock -
+                // whatever it drives simply freezes, with nothing logged.
+                // BuffersQueued reaches 0 only once every submitted buffer
+                // really has been consumed (and never for a looping one).
+                if (xstate.BuffersQueued == 0 || effect->stopped == true)
                 {
                     uint32_t key = effect->key;
                     IXAudio2SourceVoice * voice = effect->voice;
@@ -802,7 +839,12 @@ void Xaudio2Implementation::update()
         {
             duration<float, std::milli> elapsed = now - m_crossfadeStart,
                                         total = m_crossfadeEnd - m_crossfadeStart;
-            float fade = elapsed / total;
+            // A zero-length crossfade (playMusic(song, 0.f) - what a seek or
+            // an immediate track switch asks for) makes this an inf or, on
+            // the very first tick, a 0/0 NaN. setVolume(NaN) on both voices
+            // is an audible dropout, and NaN >= 1.f is false so the switch
+            // never completes either. Treat "no duration" as "already done".
+            float fade = total.count() > 0.f ? (elapsed / total) : 1.f;
 
             nextsong->setVolume(fade);
 
