@@ -113,7 +113,14 @@ private:
 
     std::shared_ptr<AudioData const> loadAudioFile (const std::filesystem::path & path);
 
+    // True only when the cache holds PLAYABLE data for `path`. It used to
+    // insert an empty placeholder on a miss and treat that placeholder as a
+    // hit on the next call, while no successful load ever replaced it - so
+    // loading the same file a second time returned an invalid AudioData and
+    // every caller saw the file as broken. See storeInCache.
     bool findInCache(const std::filesystem::path & path, std::shared_ptr<AudioData const> & result);
+
+    void storeInCache(const std::filesystem::path & path, std::shared_ptr<AudioData const> audio);
 
     void sendAudioLoadedMessage(std::shared_ptr<AudioData const> audio, char const * path);
 

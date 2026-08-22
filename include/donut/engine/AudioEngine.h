@@ -143,7 +143,11 @@ public:
 
     // plays a song on the music mixing track ; startOffsetSeconds seeks
     // into the song before playback starts (see EffectDesc::startOffsetSeconds)
-    std::weak_ptr<Effect> playMusic(std::shared_ptr<AudioData const> song, float crossfade = 2.f, float startOffsetSeconds = 0.f);
+    // `loop` repeats the track forever (the historical behaviour); false
+    // plays it once and lets the voice finish, which is what a caller that
+    // treats the track as a timeline wants - there is no "the song ended"
+    // otherwise.
+    std::weak_ptr<Effect> playMusic(std::shared_ptr<AudioData const> song, float crossfade = 2.f, float startOffsetSeconds = 0.f, bool loop = true);
 
     // returns true the engine is transitioning (cross-fading) between 2 songs, false otherwise
     bool crossfadeActive() const;

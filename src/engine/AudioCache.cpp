@@ -225,13 +225,21 @@ bool AudioCache::findInCache(const std::filesystem::path & path, std::shared_ptr
 
     std::lock_guard<std::mutex> guard(m_LoadedDataMutex);
 
-    result = m_LoadedAudioData[path.generic_string()];
-    if (result)
-        return true;
+    auto it = m_LoadedAudioData.find(path.generic_string());
+    if (it == m_LoadedAudioData.end() || !it->second || !it->second->valid())
+        return false;
 
-    result = std::make_shared<AudioData const>();
-    m_LoadedAudioData[path.generic_string()] = result;
-    return false;
+    result = it->second;
+    return true;
+}
+
+void AudioCache::storeInCache(const std::filesystem::path & path, std::shared_ptr<AudioData const> audio)
+{
+    if (!audio || !audio->valid())
+        return;
+
+    std::lock_guard<std::mutex> guard(m_LoadedDataMutex);
+    m_LoadedAudioData[path.generic_string()] = std::move(audio);
 }
 
 void AudioCache::sendAudioLoadedMessage(std::shared_ptr<AudioData const> audio, char const * path)
@@ -248,6 +256,7 @@ std::shared_ptr<AudioData const> AudioCache::LoadFromFile(const std::filesystem:
 
     if ((audio = loadAudioFile (path)))
     {
+        storeInCache(path, audio);
         sendAudioLoadedMessage(audio, path.generic_string().c_str());
     }
     return audio;
@@ -260,11 +269,16 @@ std::shared_ptr<AudioData const> AudioCache::LoadFromFileAsync(const std::filesy
     if (findInCache(path, audio))
         return audio;
 
-    threadPool.AddTask([this, &audio, path]()
+    // The task outlives this call, so it publishes into the cache rather
+    // than into `audio` - which is a local that has already gone out of
+    // scope by the time the task runs. (Callers poll LoadFromFile, or
+    // LoadFromFileAsync again, to pick the result up.)
+    threadPool.AddTask([this, path]()
     {
-        if ((audio = loadAudioFile(path)))
+        if (std::shared_ptr<AudioData const> loaded = loadAudioFile(path))
         {
-            sendAudioLoadedMessage(audio, path.generic_string().c_str());
+            storeInCache(path, loaded);
+            sendAudioLoadedMessage(loaded, path.generic_string().c_str());
         }
     });
     return audio;

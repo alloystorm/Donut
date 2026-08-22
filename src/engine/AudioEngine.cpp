@@ -98,7 +98,7 @@ public:
     Options const & getOptions() const { return m_options; }
 
     virtual std::weak_ptr<Effect> playEffect(EffectDesc const & desc) = 0;
-    virtual std::weak_ptr<Effect> playMusic(std::shared_ptr<AudioData const> sample, float crossfade, float startOffsetSeconds) = 0;
+    virtual std::weak_ptr<Effect> playMusic(std::shared_ptr<AudioData const> sample, float crossfade, float startOffsetSeconds, bool loop) = 0;
 
     virtual bool crossfadeActive() const = 0;
 
@@ -345,7 +345,7 @@ public:
 
     virtual std::weak_ptr<Effect> playEffect(EffectDesc const & desc);
 
-    virtual std::weak_ptr<Effect> playMusic(std::shared_ptr<AudioData const> sample, float crossfade, float startOffsetSeconds);
+    virtual std::weak_ptr<Effect> playMusic(std::shared_ptr<AudioData const> sample, float crossfade, float startOffsetSeconds, bool loop);
 
     virtual bool crossfadeActive() const;
 
@@ -366,6 +366,11 @@ private:
     static bool canPlaySample(std::shared_ptr<AudioData const> sample);
 
     IXAudio2SourceVoice * allocateVoice(uint32_t key, WAVEFORMATEX const & wfx);
+
+    // Returns a voice to the pool (or destroys it if the pool is full),
+    // leaving it stopped and flushed so the next allocateVoice can
+    // reconfigure it. Caller must hold m_voicePoolMutex.
+    void recycleVoice(uint32_t key, IXAudio2SourceVoice * voice);
 
     std::weak_ptr<Effect> playSample(IXAudio2SubmixVoice * submix, EffectDesc const & desc);
 
@@ -513,6 +518,40 @@ bool Xaudio2Implementation::canPlaySample(std::shared_ptr<AudioData const> sampl
     return true;
 }
 
+void Xaudio2Implementation::recycleVoice(uint32_t key, IXAudio2SourceVoice * voice)
+{
+    if (!voice)
+        return;
+
+    voice->Stop(0);
+    voice->FlushSourceBuffers();
+
+    // if we haven't reached the maximum number of voices, place the this one
+    // back in the pool for re-use, otherwise destroy it & trim the pool
+    if (m_activeVoices.size() + m_voicePool.size() < m_options.maxVoices)
+    {
+        std::unordered_map<uint32_t, IXAudio2SourceVoice *>::value_type v(key, voice);
+        m_voicePool.emplace(v);
+    }
+    else
+    {   // we have reached the maximum number of voices in the pool
+        if (m_voicePool.empty())
+            // all voices are active, there is no space left : destroy this one
+            voice->DestroyVoice();
+        else
+        {
+            // in order to avoid the voice pool being filled with key that don't match
+            // any samples, replace one of them with this one, in the hope this one
+            // will be more re-usable in case the older one had an uncommon key
+            auto oldvoice = m_voicePool.begin();
+            oldvoice->second->DestroyVoice();
+            m_voicePool.erase(oldvoice);
+            std::unordered_map<uint32_t, IXAudio2SourceVoice *>::value_type v(key, voice);
+            m_voicePool.emplace(v);
+        }
+    }
+}
+
 IXAudio2SourceVoice * Xaudio2Implementation::allocateVoice(uint32_t key, WAVEFORMATEX const & wfx)
 {
     assert(m_voicePoolMutex.try_lock()==false); // make sure we can maniuplate the voice pool safely
@@ -564,11 +603,18 @@ std::weak_ptr<Effect> Xaudio2Implementation::playSample(IXAudio2SubmixVoice * su
         HRESULT hr;
         if (FAILED(hr = voice->SetSourceSampleRate(desc.sample->sampleRate)))
         {
-#ifdef _DEBUG
             // manuelk : not sure why sometimes Xaudio2 returns XAUDIO2_E_INVALID_CALL here
-            // when queuing many effects too quickly - setting to fail silently in release mode
+            // when queuing many effects too quickly
+            //
+            // Logged in every configuration, not just Debug. This is one of
+            // only two ways playSample can fail without saying anything, and
+            // a caller treating a track as a clock cannot tell "the engine
+            // refused" from "the file was bad" - the silence cost a debug
+            // cycle. The voice is also returned to the pool rather than
+            // leaked: it was taken out of the pool a few lines above, and
+            // dropping it here meant every failure permanently lost one.
             log::warning("AudioEngine : failed to set sample rate for audio sample (%08x)", hr);
-#endif
+            recycleVoice(key, voice);
             return result;
         }
 
@@ -681,7 +727,7 @@ std::weak_ptr<Effect> Xaudio2Implementation::playEffect(EffectDesc const & desc)
     return playSample(m_effects, desc);
 }
 
-std::weak_ptr<Effect> Xaudio2Implementation::playMusic(std::shared_ptr<AudioData const> sample, float crossfade, float startOffsetSeconds)
+std::weak_ptr<Effect> Xaudio2Implementation::playMusic(std::shared_ptr<AudioData const> sample, float crossfade, float startOffsetSeconds, bool loop)
 {
     std::weak_ptr<Effect> result;
 
@@ -690,7 +736,7 @@ std::weak_ptr<Effect> Xaudio2Implementation::playMusic(std::shared_ptr<AudioData
 
     EffectDesc desc;
     desc.sample = sample;
-    desc.loop = Engine::infinite_loop;
+    desc.loop = loop ? Engine::infinite_loop : 1;
     desc.transform = nullptr;
     desc.startOffsetSeconds = startOffsetSeconds;
 
@@ -771,33 +817,7 @@ void Xaudio2Implementation::update()
                     IXAudio2SourceVoice * voice = effect->voice;
                     effect->voice = nullptr; // prevent client code from accessing this voice asynchronously
 
-                    voice->Stop(0);
-                    voice->FlushSourceBuffers();
-
-                    // if we haven't reached the maximum number of voices, place the this one
-                    // back in the pool for re-use, otherwise destroy it & trim the pool
-                    if (m_activeVoices.size() + m_voicePool.size() < m_options.maxVoices)
-                    {
-                        std::unordered_map<uint32_t, IXAudio2SourceVoice *>::value_type v(key, voice);
-                        m_voicePool.emplace(v);
-                    }
-                    else
-                    {   // we have reached the maximum number of voices in the pool
-                        if (m_voicePool.empty())
-                            // all voices are active, there is no space left : destroy this one
-                            voice->DestroyVoice();
-                        else
-                        {
-                            // in order to avoid the voice pool being filled with key that don't match
-                            // any samples, replace one of them with this one, in the hope this one
-                            // will be more re-usable in case the older one had an uncommon key
-                            auto oldvoice = m_voicePool.begin();
-                            oldvoice->second->DestroyVoice();
-                            m_voicePool.erase(oldvoice);
-                            std::unordered_map<uint32_t, IXAudio2SourceVoice *>::value_type v(key, voice);
-                            m_voicePool.emplace(v);
-                        }
-                    }
+                    recycleVoice(key, voice);
                     // remove the voice from the active list
                     it = m_activeVoices.erase(it);
                 }
@@ -1040,11 +1060,11 @@ std::weak_ptr<Effect> Engine::playEffect(EffectDesc const & desc)
     return effect;
 }
 
-std::weak_ptr<Effect> Engine::playMusic(std::shared_ptr<AudioData const> song, float crossfade, float startOffsetSeconds)
+std::weak_ptr<Effect> Engine::playMusic(std::shared_ptr<AudioData const> song, float crossfade, float startOffsetSeconds, bool loop)
 {
     std::weak_ptr<Effect> effect;
     if (m_implementation)
-        effect = m_implementation->playMusic(song, crossfade, startOffsetSeconds);
+        effect = m_implementation->playMusic(song, crossfade, startOffsetSeconds, loop);
     return effect;
 }
 
