@@ -94,6 +94,23 @@ namespace donut::app
     private:
         bool reallocateBuffer(nvrhi::BufferHandle& buffer, size_t requiredSize, size_t reallocateSize, bool isIndexBuffer);
 
+        // ImGuiBackendFlags_RendererHasTextures (Dear ImGui 1.92+): the atlas
+        // is dynamic - it rasterizes glyphs on demand and asks the backend to
+        // create/update/destroy its textures as it grows. Without this the
+        // backend gets the legacy path, which pre-bakes ImFontConfig::
+        // GlyphRanges into one static texture up front. That is the difference
+        // between a ~1 MB atlas holding what was actually drawn and a 64 MB one
+        // holding every CJK ideograph in case it is.
+        void updateTextures(ImDrawData* drawData);
+        void updateTexture(ImTextureData* tex);
+        void destroyTexture(ImTextureData* tex);
+
+        // Keeps the nvrhi handle alive for as long as ImGui references the
+        // texture: ImTextureData::TexID is a bare pointer, so something has to
+        // own the reference. Keyed by ImTextureData rather than by ITexture
+        // because destroy is driven from the ImGui side.
+        std::unordered_map<ImTextureData*, nvrhi::TextureHandle> managedTextures;
+
 
         nvrhi::IGraphicsPipeline* getPSO(nvrhi::FramebufferInfo const& framebufferInfo);
         nvrhi::IBindingSet* getBindingSet(nvrhi::ITexture* texture);

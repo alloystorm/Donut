@@ -395,7 +395,13 @@ void ImGui_Renderer::DisplayScaleChanged(float scaleX, float scaleY)
     // Clear the ImGui font atlas and invalidate the font texture
     // to re-register and re-rasterize all fonts on the next frame (see Animate)
     io.Fonts->Clear();
-    io.Fonts->TexRef = ImTextureRef();
+    // Only in the legacy static-atlas mode. With ImGuiBackendFlags_
+    // RendererHasTextures the atlas owns an ImTextureData whose lifetime ImGui
+    // manages, and TexRef points at it - overwriting it with an empty ref
+    // detaches the atlas from its own texture and nothing draws again.
+    // Clear() has already queued whatever destruction is needed.
+    if (!(io.BackendFlags & ImGuiBackendFlags_RendererHasTextures))
+        io.Fonts->TexRef = ImTextureRef();
 
     for (auto& font : m_fonts)
         font->ReleaseScaledFont();
@@ -458,7 +464,10 @@ void RegisteredFont::CreateScaledFont(float displayScale)
         m_imFont = ImGui::GetIO().Fonts->AddFontDefault(&fontConfig);
     }
 
-    if (m_imFont)
+    // Legacy static atlas only - see DisplayScaleChanged above. A dynamic
+    // atlas re-rasterizes on demand when a font is added; it needs no nudge,
+    // and clearing TexRef here would break it.
+    if (m_imFont && !(ImGui::GetIO().BackendFlags & ImGuiBackendFlags_RendererHasTextures))
     {
         ImGui::GetIO().Fonts->TexRef = ImTextureRef();
     }

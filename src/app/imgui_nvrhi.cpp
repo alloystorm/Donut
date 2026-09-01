@@ -76,9 +76,115 @@ struct VERTEX_CONSTANT_BUFFER
     float        mvp[4][4];
 };
 
+// Dear ImGui 1.92+ dynamic textures. ImGui owns the pixel data and tells us,
+// per frame and per texture, what it needs done; we own the GPU resource. This
+// is what lets the font atlas rasterize glyphs on demand instead of pre-baking
+// a fixed GlyphRanges into one static texture at startup.
+//
+// nvrhi has no sub-rectangle texture write (ICommandList::writeTexture takes a
+// whole mip), so a WantUpdates re-uploads the full image rather than the dirty
+// rect ImGui hands us. The atlas is small and grows rarely, so this is a few
+// hundred KB on the frames where it happens - cheaper than the alternative it
+// replaces, which was holding every glyph resident forever.
+void ImGui_NVRHI::updateTexture(ImTextureData* tex)
+{
+    if (tex->Status == ImTextureStatus_WantCreate)
+    {
+        nvrhi::TextureDesc textureDesc;
+        textureDesc.width = uint32_t(tex->Width);
+        textureDesc.height = uint32_t(tex->Height);
+        textureDesc.format = (tex->Format == ImTextureFormat_Alpha8)
+                           ? nvrhi::Format::R8_UNORM : nvrhi::Format::RGBA8_UNORM;
+        textureDesc.debugName = "ImGui texture";
+        // keepInitialState, NOT setPermanentTextureState: these are written
+        // again every time a new glyph is rasterized into them, and a
+        // permanent state is immutable in nvrhi - the first update failed
+        // validation with "Permanent texture ... doesn't have the right state
+        // bits. Required: 0x800 (CopyDest), present: 0x20 (ShaderResource)".
+        // The legacy font texture below gets away with permanent state only
+        // because it is uploaded exactly once. keepInitialState also carries
+        // the state ACROSS command lists, which plain tracking does not - the
+        // next thing this hit was "Unknown prior state of texture", once per
+        // frame, because every open() starts tracking from scratch.
+        textureDesc.initialState = nvrhi::ResourceStates::ShaderResource;
+        textureDesc.keepInitialState = true;
+
+        nvrhi::TextureHandle texture = m_device->createTexture(textureDesc);
+        if (texture == nullptr)
+            return;   // leave Status alone; ImGui will ask again next frame
+
+        // writeTexture transitions to CopyDest and keepInitialState restores
+        // ShaderResource at close, so the draws that sample it - in a
+        // different command list - need nothing further.
+        m_commandList->open();
+        m_commandList->writeTexture(texture, 0, 0, tex->GetPixels(), size_t(tex->GetPitch()));
+        m_commandList->close();
+        m_device->executeCommandList(m_commandList);
+
+        tex->SetTexID(ImTextureID(texture.Get()));
+        tex->SetStatus(ImTextureStatus_OK);
+        managedTextures[tex] = texture;
+
+        // Rare (the atlas grows by doubling and then stops), and the one line
+        // that says the dynamic path is actually live - and how big the atlas
+        // grew to, which is the whole point of it being dynamic.
+        donut::log::info("ImGui texture #%d created: %dx%d, %.2f MB (%d live)",
+                         tex->UniqueID, tex->Width, tex->Height,
+                         double(tex->GetSizeInBytes()) / (1024.0 * 1024.0), int(managedTextures.size()));
+    }
+    else if (tex->Status == ImTextureStatus_WantUpdates)
+    {
+        auto it = managedTextures.find(tex);
+        if (it == managedTextures.end())
+            return;
+
+        m_commandList->open();
+        m_commandList->writeTexture(it->second, 0, 0, tex->GetPixels(), size_t(tex->GetPitch()));
+        m_commandList->close();
+        m_device->executeCommandList(m_commandList);
+
+        tex->SetStatus(ImTextureStatus_OK);
+    }
+    else if (tex->Status == ImTextureStatus_WantDestroy && tex->UnusedFrames > 0)
+    {
+        destroyTexture(tex);
+    }
+}
+
+void ImGui_NVRHI::destroyTexture(ImTextureData* tex)
+{
+    auto it = managedTextures.find(tex);
+    if (it != managedTextures.end())
+    {
+        // The binding set caches this texture; it must go with it or the next
+        // texture allocated at the same address inherits a stale binding.
+        bindingsCache.erase(it->second.Get());
+        managedTextures.erase(it);
+        donut::log::info("ImGui texture #%d destroyed (%d live)", tex->UniqueID, int(managedTextures.size()));
+    }
+    tex->SetTexID(ImTextureID_Invalid);
+    tex->SetStatus(ImTextureStatus_Destroyed);
+}
+
+void ImGui_NVRHI::updateTextures(ImDrawData* drawData)
+{
+    if (drawData == nullptr || drawData->Textures == nullptr)
+        return;
+    for (ImTextureData* tex : *drawData->Textures)
+        if (tex != nullptr && tex->Status != ImTextureStatus_OK)
+            updateTexture(tex);
+}
+
 bool ImGui_NVRHI::updateFontTexture()
 {
     ImGuiIO& io = ImGui::GetIO();
+
+    // Dynamic textures: the atlas creates and grows itself through
+    // updateTextures() during render, and there is deliberately nothing to
+    // pre-build here. Touching io.Fonts->TexRef in this mode would detach the
+    // atlas from the ImTextureData it manages.
+    if (io.BackendFlags & ImGuiBackendFlags_RendererHasTextures)
+        return true;
 
     // If the font texture exists and is bound to ImGui, we're done.
     // Note: ImGui_Renderer will reset io.Fonts->TexRef when new fonts are added.
@@ -123,6 +229,11 @@ bool ImGui_NVRHI::updateFontTexture()
 bool ImGui_NVRHI::init(nvrhi::IDevice* device, std::shared_ptr<ShaderFactory> shaderFactory)
 {
     m_device = device;
+
+    // See updateTexture(): opt into the dynamic font atlas. Must be set before
+    // the first atlas build, since ImFontAtlasBuildMain latches it to decide
+    // between on-demand rasterization and legacy pre-baking.
+    ImGui::GetIO().BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
 
     m_commandList = m_device->createCommandList();
 
@@ -325,6 +436,11 @@ bool ImGui_NVRHI::render(nvrhi::IFramebuffer* framebuffer)
 {
     ImDrawData *drawData = ImGui::GetDrawData();
     const auto& io = ImGui::GetIO();
+
+    // Before opening the render command list: these submit their own uploads,
+    // and a newly grown atlas has to be resident before the draws that sample
+    // it. ImGui asks for this every frame; almost always there is nothing to do.
+    updateTextures(drawData);
 
     m_commandList->open();
     m_commandList->beginMarker("ImGUI");
