@@ -568,7 +568,7 @@ static const void ParseMaterialExtensions(cgltf_options* options, const cgltf_ma
         int k = 0;
         if (strcmp(ext.name, "NV_materials_subsurface") == 0)
         {
-            matInfo->enableSubsurfaceScattering = true;
+            matInfo->enableSubsurfaceScattering = false;
             cgltf_subsurface gltf_subsurface = {};
             cgltf_parse_json_subsurface(options, tokens, k, json_chunk, &gltf_subsurface);
 
