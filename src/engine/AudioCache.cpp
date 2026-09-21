@@ -72,6 +72,28 @@ extern "C" int stb_vorbis_decode_memory(const unsigned char* mem, int len, int* 
 namespace donut::engine::audio
 {
 
+std::shared_ptr<AudioData const> AudioData::CreatePcm(
+    std::vector<uint8_t>&& pcm, uint32_t channels,
+    uint32_t rate, uint16_t bits)
+{
+    if (pcm.empty() || channels == 0 || rate == 0 || bits == 0 || bits % 8 != 0 || pcm.size() > UINT32_MAX)
+        return {};
+    void* owned = malloc(pcm.size());
+    if (!owned) return {};
+    memcpy(owned, pcm.data(), pcm.size());
+    auto result = std::make_shared<AudioData>();
+    result->m_data = std::make_shared<donut::vfs::Blob>(owned, pcm.size());
+    result->format = Format::WAVE_PCM_INTEGER;
+    result->nchannels = channels;
+    result->sampleRate = rate;
+    result->bitsPerSample = bits;
+    result->blockAlignment = uint16_t(channels * bits / 8);
+    result->byteRate = rate * result->blockAlignment;
+    result->samplesSize = uint32_t(pcm.size());
+    result->samples = result->m_data->data();
+    return result;
+}
+
 AudioCache::AudioCache(std::shared_ptr<vfs::IFileSystem> fs) : m_fs(fs) { }
 
 void AudioCache::Reset()

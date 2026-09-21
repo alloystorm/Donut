@@ -28,6 +28,7 @@
 #include <map>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace donut::vfs
 {
@@ -51,6 +52,9 @@ class AudioCache;
 class AudioData
 {
 public:
+    static std::shared_ptr<AudioData const> CreatePcm(
+        std::vector<uint8_t>&& samples, uint32_t channels,
+        uint32_t sampleRate, uint16_t bitsPerSample);
 
     // duration of the sample (in seconds)
     float duration() const { return float(samplesSize) / float(byteRate); }
