@@ -566,13 +566,26 @@ IXAudio2SourceVoice * Xaudio2Implementation::allocateVoice(uint32_t key, WAVEFOR
     IXAudio2SourceVoice * voice = nullptr;
     if (key != 0)
     {
-        auto it = m_voicePool.find(key);
-        if (it != m_voicePool.end())
+        // Only a voice whose flush has landed can be reused. recycleVoice's
+        // FlushSourceBuffers is applied on the audio thread's next pass, so a
+        // voice recycled a moment ago still reports its buffer queued - and
+        // SetSourceSampleRate on it fails with XAUDIO2_E_INVALID_CALL. That
+        // is exactly what a replay of the track that just finished does (loop
+        // single, Play on an ended song), and a failed start is a stalled
+        // clock. Such a voice stays pooled; it is fine by the next request.
+        auto range = m_voicePool.equal_range(key);
+        for (auto it = range.first; it != range.second; ++it)
         {
-            voice = it->second;
-            m_voicePool.erase(it);
+            XAUDIO2_VOICE_STATE xstate;
+            it->second->GetState(&xstate, XAUDIO2_VOICE_NOSAMPLESPLAYED);
+            if (xstate.BuffersQueued == 0)
+            {
+                voice = it->second;
+                m_voicePool.erase(it);
+                break;
+            }
         }
-        else
+        if (!voice)
         {
             HRESULT hr;
             if (FAILED(hr = m_xaudio2->CreateSourceVoice(&voice, &wfx, 0, 4.0f))) {
