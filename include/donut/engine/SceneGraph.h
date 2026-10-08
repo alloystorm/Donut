@@ -219,7 +219,7 @@ namespace donut::engine
     {
     public:
         float intensity = 1.f;  // Luminous intensity of the light (lm/sr) in its primary direction; multiplied by `color`.
-        float radius = 0.f;     // Radius of the light sphere, in world units.
+        float radius = 0.1f;     // Radius of the light sphere, in world units.
         float range = 0.f;      // Range of influence for the light. 0 means infinite range.
         float innerAngle = 180.f;    // Apex angle of the full-bright cone, in degrees; constant intensity inside the inner cone, smooth falloff between inside and outside.
         float outerAngle = 180.f;    // Apex angle of the light cone, in degrees - everything outside of that cone is dark.
@@ -236,7 +236,7 @@ namespace donut::engine
     {
     public:
         float intensity = 1.f;  // Luminous intensity of the light (lm/sr); multiplied by `color`.
-        float radius = 0.f;    // Radius of the light sphere, in world units.
+        float radius = 0.1f;    // Radius of the light sphere, in world units.
         float range = 0.f;     // Range of influence for the light. 0 means infinite range.
 
         [[nodiscard]] std::shared_ptr<SceneGraphLeaf> Clone() override;
