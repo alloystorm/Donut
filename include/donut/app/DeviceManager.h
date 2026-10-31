@@ -145,6 +145,7 @@ namespace donut::app
         bool startMaximized = false; // ignores backbuffer width/height to be monitor size
         bool startFullscreen = false;
         bool startBorderless = false;
+        bool startHidden = false; // the window stays hidden until the app calls glfwShowWindow
         bool allowModeSwitch = false;
         int windowPosX = -1;            // -1 means use default placement
         int windowPosY = -1;
@@ -241,6 +242,10 @@ namespace donut::app
     {
     public:
         static DeviceManager* Create(nvrhi::GraphicsAPI api);
+
+        // False until the background joystick scan has finished. Any GLFW
+        // joystick call before that would run the scan on the calling thread.
+        static bool JoysticksReady();
 
         bool CreateHeadlessDevice(const DeviceCreationParameters& params);
         bool CreateWindowDeviceAndSwapChain(const DeviceCreationParameters& params, const char* windowTitle);

@@ -52,6 +52,7 @@ freely, subject to the following restrictions:
 #include <donut/core/log.h>
 #include <nvrhi/utils.h>
 
+#include <atomic>
 #include <cstdio>
 #include <iomanip>
 #include <thread>
@@ -99,18 +100,29 @@ public:
 	}
 
 	void UpdateAllJoysticks(const std::list<IRenderPass*>& passes);
-	
+
 	void EraseDisconnectedJoysticks();
 	void EnumerateJoysticks();
 
 	void ConnectJoystick(int id);
 	void DisconnectJoystick(int id);
 
+	// GLFW's first joystick call lists every HID device through DirectInput,
+	// and a device that does not answer holds that up for seconds (5 s per
+	// interface, measured). So the scan runs on its own thread; the main thread
+	// must not make a joystick call until Ready() says it finished.
+	void BeginScan();
+	bool Ready();
+	void FinishScan();
+
 private:
 	JoyStickManager() {}
 	void UpdateJoystick(int j, const std::list<IRenderPass*>& passes);
 
 	std::list<int> m_JoystickIDs, m_RemovedJoysticks;
+	std::thread m_ScanThread;
+	std::atomic<bool> m_ScanDone{ false };
+	bool m_Attached = false;
 };
 
 static void ErrorCallback_GLFW(int error, const char *description)
@@ -368,11 +380,7 @@ bool DeviceManager::CreateWindowDeviceAndSwapChain(const DeviceCreationParameter
     glfwSetCursorPosCallback(m_Window, MousePosCallback_GLFW);
     glfwSetMouseButtonCallback(m_Window, MouseButtonCallback_GLFW);
     glfwSetScrollCallback(m_Window, MouseScrollCallback_GLFW);
-    glfwSetJoystickCallback(JoystickConnectionCallback_GLFW);
-
-    // If there are multiple device managers, then this would be called by each one which isn't necessary
-    // but should not hurt.
-    JoyStickManager::Singleton().EnumerateJoysticks();
+    JoyStickManager::Singleton().BeginScan();
 
     if (!CreateDevice())
         return false;
@@ -380,11 +388,14 @@ bool DeviceManager::CreateWindowDeviceAndSwapChain(const DeviceCreationParameter
     if (!CreateSwapChain())
         return false;
 
-    glfwShowWindow(m_Window);
-    
-    if (m_DeviceParams.startMaximized)
+    if (!params.startHidden)
     {
-        glfwMaximizeWindow(m_Window);
+        glfwShowWindow(m_Window);
+
+        if (m_DeviceParams.startMaximized)
+        {
+            glfwMaximizeWindow(m_Window);
+        }
     }
 
     // reset the back buffer size state to enforce a resize event
@@ -588,8 +599,11 @@ bool DeviceManager::AnimateRenderPresent()
     double curTime = glfwGetTime();
     double elapsedTime = curTime - m_PreviousFrameTimestamp;
 
-	JoyStickManager::Singleton().EraseDisconnectedJoysticks();
-	JoyStickManager::Singleton().UpdateAllJoysticks(m_vRenderPasses);
+	if (JoyStickManager::Singleton().Ready())
+	{
+		JoyStickManager::Singleton().EraseDisconnectedJoysticks();
+		JoyStickManager::Singleton().UpdateAllJoysticks(m_vRenderPasses);
+	}
 
     if (m_windowVisible && (m_windowIsInFocus || ShouldRenderUnfocused() || m_RequestedRenderUnfocused))
     {
@@ -827,6 +841,43 @@ void DeviceManager::MouseScrollUpdate(double xoffset, double yoffset)
     }
 }
 
+void JoyStickManager::BeginScan()
+{
+	if (m_ScanThread.joinable() || m_ScanDone.load())
+		return;
+
+	m_ScanThread = std::thread([this]
+	{
+		const double start = glfwGetTime();
+		glfwJoystickPresent(GLFW_JOYSTICK_1);
+		donut::log::info("[timing] Joystick scan: %.0f ms", (glfwGetTime() - start) * 1000.0);
+		m_ScanDone.store(true);
+	});
+}
+
+bool JoyStickManager::Ready()
+{
+	if (!m_Attached && m_ScanDone.load())
+	{
+		FinishScan();
+		m_Attached = true;
+		glfwSetJoystickCallback(JoystickConnectionCallback_GLFW);
+		EnumerateJoysticks();
+	}
+	return m_Attached;
+}
+
+void JoyStickManager::FinishScan()
+{
+	if (m_ScanThread.joinable())
+		m_ScanThread.join();
+}
+
+bool DeviceManager::JoysticksReady()
+{
+	return JoyStickManager::Singleton().Ready();
+}
+
 void JoyStickManager::EnumerateJoysticks()
 {
 	// The glfw header says nothing about what values to expect for joystick IDs. Empirically, having connected two
@@ -938,6 +989,7 @@ void DeviceManager::Shutdown()
         m_Window = nullptr;
     }
 
+    JoyStickManager::Singleton().FinishScan();
     glfwTerminate();
 
     m_InstanceCreated = false;
